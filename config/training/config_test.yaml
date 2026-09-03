@@ -1,0 +1,7 @@
+dataset:
+    dataset_root_path: "/home/islab-ai/dataset/vistas"
+seg_model:
+    name: "segformer_b0_ade"
+encoder_model:
+    name: "resnet50"
+    type: "conv"
