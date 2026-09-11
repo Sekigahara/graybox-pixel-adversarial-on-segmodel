@@ -1,0 +1,24 @@
+dataset:
+    dataset_root_path: "/home/islab-ai/dataset/mapilary_vista/vistas"
+    batch_size: 2
+    num_workers: 1
+    ignore_index: null
+seg_model:
+    name: "mask2former_vistas"
+    #name: "wideresnet38_deeplab3_vistas"
+encoder_model:
+    name: "resnet50"
+    type: "conv"
+    n_trainable_layers: 1
+patch_model:
+    ckpt_path: "results/adversarial_seg/20260910_141224/checkpoints/best.pt"
+    mask_temperature: 0.10
+    eps: 0.01
+evaluation:
+    mode: "comparison"
+    split: "validation"
+    num_samples: 10
+    min_label_area: 200
+    save_dir: null
+export:
+    save_dir: "results/adversarial_seg"

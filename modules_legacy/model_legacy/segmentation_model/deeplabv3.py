@@ -2,12 +2,11 @@ from modules.model.segmentation_model.base_segmentation_model import BaseSegment
 
 import torch
 from torchvision.models.segmentation import (
-    lraspp_mobilenet_v3_large,
-    LRASPP_MobileNet_V3_Large_Weights,
+    deeplabv3_resnet50,
+    DeepLabV3_ResNet50_Weights,
 )
 
-
-class LRASPPModel(BaseSegmentationModel):
+class DeepLabV3Model(BaseSegmentationModel):
 
     def __init__(
         self,
@@ -16,19 +15,17 @@ class LRASPPModel(BaseSegmentationModel):
         input_size=(520, 520),
     ):
         super().__init__()
-        
-        self._input_size = input_size
 
+        self._input_size = input_size
+        
         if pretrained:
 
             weights = (
-                LRASPP_MobileNet_V3_Large_Weights.DEFAULT
+                DeepLabV3_ResNet50_Weights.DEFAULT
             )
 
-            self.model = (
-                lraspp_mobilenet_v3_large(
-                    weights=weights
-                )
+            self.model = deeplabv3_resnet50(
+                weights=weights
             )
 
             self.categories = (
@@ -37,10 +34,8 @@ class LRASPPModel(BaseSegmentationModel):
 
         else:
 
-            self.model = (
-                lraspp_mobilenet_v3_large(
-                    weights=None
-                )
+            self.model = deeplabv3_resnet50(
+                weights=None
             )
 
             self.categories = None
@@ -71,13 +66,19 @@ class LRASPPModel(BaseSegmentationModel):
         return 21
 
     def get_feature_module(self):
-        return (
-            self.model
-            .classifier
-            .cbr
-        )
-
+        return self.model.classifier[0]
+    
     def forward(self, x):
+
+        """
+        x:
+            [B, 3, H, W]
+            range [0, 1]
+
+        returns:
+            [B, 21, H, W]
+        """
+
         original_size = x.shape[-2:]
 
         if self.resize_input:
@@ -93,7 +94,9 @@ class LRASPPModel(BaseSegmentationModel):
             x - self.mean
         ) / self.std
 
-        logits = self.model(x)["out"]
+        output = self.model(x)
+
+        logits = output["out"]
 
         logits = F.interpolate(
             logits,

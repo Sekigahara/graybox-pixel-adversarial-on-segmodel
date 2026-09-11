@@ -1,9 +1,6 @@
 from modules.model.segmentation_model.deeplabv3 import DeepLabV3Model
 from modules.model.segmentation_model.lraspp import LRASPPModel
 from modules.model.segmentation_model.segformer import SegFormerModel
-from modules.model.segmentation_model.mask2former_vistas import Mask2FormerVistasModel
-from modules.model.segmentation_model.wideresnet38_deeplab3 import WideResNet38DeepLab3VistasModel
-
 
 def load_segmentation_model(
     name: str,
@@ -13,16 +10,7 @@ def load_segmentation_model(
     if name == "deeplabv3":
 
         model = DeepLabV3Model()
-    elif name == "wideresnet38_deeplab3_vistas":
-        return WideResNet38DeepLab3VistasModel(
-            checkpoint_path='pretrained/mapillary/wideresnet38_deeplab3_vistas.pth.tar',
-            #input_size=input_size,
-            #ignore_index=ignore_index,
-            label_config_path='pretrained/mapillary/mapillary_vistas_v1_labels.json'
-        )
-    elif name == "mask2former_vistas":
-        return Mask2FormerVistasModel()
-        
+
     elif name == "lraspp":
 
         model = LRASPPModel()
