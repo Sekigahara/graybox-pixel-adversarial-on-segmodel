@@ -12,7 +12,7 @@ from modules.model.adversarial_model.vit_encoder import ViTEncoder
 from modules.model.adversarial_model.decoder import PatchMaskModel
 from modules.model.seg_model_loader import load_segmentation_model
 
-# Other Modules
+# Other than models
 from modules.utils.export_import import save_patch_model
 from modules.utils.utils import load_yaml
 from modules.training.patch_segmentation_trainer import PatchSegmentationTrainer
@@ -22,15 +22,15 @@ from modules.utils.hook_debug import validate_feature_extraction
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train the dense-to-sparse patch model."
+        description="Train the patch and mask generator."
     )
 
     parser.add_argument(
         "-c",
         "--config",
         type=Path,
-        default="config/training/config_retention.yaml",
         help="Path to the YAML configuration file",
+        default="config/training/config_test.yaml",
     )
 
     parser.add_argument(
@@ -49,27 +49,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    # Load configuration
     config = load_yaml(args.config)
 
-    # ==================================================
-    # Devices
-    # ==================================================
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is not available.")
 
-    if args.gpu_num == "cpu":
-        patch_device = torch.device("cpu")
-        segmentation_device = torch.device("cpu")
+    if torch.cuda.device_count() < 2:
+        raise RuntimeError(
+            "The current training pipeline requires two visible GPUs."
+        )
 
-    elif torch.cuda.device_count() >= 2:
-        patch_device = torch.device("cuda:0")
-        segmentation_device = torch.device("cuda:1")
-
-    else:
-        patch_device = torch.device("cuda:0")
-        segmentation_device = patch_device
-
-    # ==================================================
-    # Segmentation Model
-    # ==================================================
+    # CUDA_VISIBLE_DEVICES remaps the selected physical GPUs.
+    patch_device = torch.device("cuda:0")
+    segmentation_device = torch.device("cuda:1")
 
     print("DEBUG : Loading Segmentation Model")
 
@@ -77,16 +71,12 @@ def main() -> None:
         name=config["seg_model"]["name"]
     ).to(segmentation_device)
 
-    print("DEBUG : Seg Model Feature Check")
+    print("DEBUG : Seg Model check on feature reshape")
 
     validate_feature_extraction(
         seg_model,
         segmentation_device,
     )
-
-    # ==================================================
-    # Patch Encoder
-    # ==================================================
 
     print("DEBUG : Loading Encoder Model")
 
@@ -102,36 +92,21 @@ def main() -> None:
             pretrained=True,
         )
 
+    # Freeze the encoder and unfreeze only the requested
+    # final stages/blocks before constructing the trainer.
     encoder_model.set_trainable_last_layers(
         num_layers=config["encoder_model"]["n_trainable_layers"]
     )
 
-    # ==================================================
-    # Dense-to-Sparse Patch Model
-    # ==================================================
-
-    print("DEBUG : Loading Patch Model")
+    print("DEBUG : Loading Decoder Model")
 
     patch_model = PatchMaskModel(
         encoder=encoder_model,
         patch_size=seg_model.get_input_size(),
         epsilon=config["training"]["eps"],
-        mask_temperature=config[
-            "training"
-        ][
-            "mask_temperature"
-        ],
-        decoder_hidden_channels=config[
-            "training"
-        ].get(
-            "decoder_hidden_channels",
-            32,
-        ),
+        mask_temperature=config["training"]["mask_temperature"],
+        selection_grid=config["training"]["selection_grid"],
     )
-
-    # ==================================================
-    # Dataset
-    # ==================================================
 
     print("DEBUG : Loading Dataset")
 
@@ -146,88 +121,60 @@ def main() -> None:
         batch_size=config["dataset"]["batch_size"],
         shuffle=True,
         num_workers=config["dataset"]["num_workers"],
-        pin_memory=args.gpu_num != "cpu",
+        pin_memory=True,
         persistent_workers=config["dataset"]["num_workers"] > 0,
         drop_last=False,
     )
 
-    val_dataset = VistasDataset(
-        root=config["dataset"]["dataset_root_path"],
-        split="validation",
-        image_size=seg_model.get_input_size(),
-    )
+#     val_dataset = VistasDataset(
+#         root=config["dataset"]["dataset_root_path"],
+#         split="validation",
+#         image_size=seg_model.get_input_size(),
+#     )
 
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config["dataset"]["batch_size"],
-        shuffle=False,
-        num_workers=config["dataset"]["num_workers"],
-        pin_memory=args.gpu_num != "cpu",
-        persistent_workers=config["dataset"]["num_workers"] > 0,
-        drop_last=False,
-    )
+#     val_loader = DataLoader(
+#         val_dataset,
+#         batch_size=config["dataset"]["batch_size"],
+#         shuffle=False,
+#         num_workers=config["dataset"]["num_workers"],
+#         pin_memory=True,
+#         persistent_workers=config["dataset"]["num_workers"] > 0,
+#         drop_last=False,
+#     )
 
-    # Reserved for a later validation method.
-    _ = val_loader
-
-    # ==================================================
-    # Save Directory
-    # ==================================================
+    # Kept for the later validation pipeline.
+    #_ = val_loader
 
     base_save_patch = os.path.join(
         config["export"]["save_dir"],
         datetime.now().strftime("%Y%m%d_%H%M%S"),
     )
 
-    # ==================================================
-    # Ignore Index
-    # ==================================================
-
-    if hasattr(seg_model, "get_ignore_index"):
-        ignore_index = seg_model.get_ignore_index()
-    else:
-        ignore_index = config["dataset"].get("ignore_index")
-
-    # ==================================================
-    # Trainer
-    # ==================================================
-
-    print("DEBUG : Trainer Initialize")
+    print("DEBUG : Trainer initialize")
 
     adv_trainer = PatchSegmentationTrainer(
         segmentation_model=seg_model,
         patch_model=patch_model,
         dataloader=train_loader,
-        scheduler_dict=config["training"]["scheduler"],
-        pruning_dict=config["training"]["pruning"],
         epochs=config["training"]["epochs"],
+        scheduler_dict=config["training"]["scheduler"],
         weight_decay=config["training"]["weight_decay"],
         loss_weight_dict=config["training"]["loss_weight"],
-        ignore_index=ignore_index,
+        ignore_index=seg_model.get_ignore_index(),
         save_dir=base_save_patch,
-        checkpoint_interval=config["export"]["checkpoint_interval"],
-        log_mode=config["export"].get("log_mode", "overwrite"),
-        grad_clip=config["training"].get("grad_clip", 1.0),
-        patch_device=str(patch_device),
-        segmentation_device=str(segmentation_device),
+        checkpoint_interval=(
+            config["export"]["checkpoint_interval"]
+        ),
     )
-
-    # ==================================================
-    # Training
-    # ==================================================
 
     print("DEBUG : Start Training")
 
+    # Close the feature hook
     try:
         training_history = adv_trainer.train()
+
     finally:
         adv_trainer.close()
-
-    _ = training_history
-
-    # ==================================================
-    # Save Final Patch Model
-    # ==================================================
 
     print("DEBUG : Saving Final Patch Model")
 
