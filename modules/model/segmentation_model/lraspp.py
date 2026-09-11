@@ -1,6 +1,5 @@
 from modules.model.segmentation_model.base_segmentation_model import BaseSegmentationModel
 
-import torch
 from torchvision.models.segmentation import (
     lraspp_mobilenet_v3_large,
     LRASPP_MobileNet_V3_Large_Weights,
@@ -70,14 +69,9 @@ class LRASPPModel(BaseSegmentationModel):
     def num_classes(self):
         return 21
 
-    def get_feature_module(self):
-        return (
-            self.model
-            .classifier
-            .cbr
-        )
 
     def forward(self, x):
+
         original_size = x.shape[-2:]
 
         if self.resize_input:

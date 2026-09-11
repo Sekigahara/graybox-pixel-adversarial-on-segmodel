@@ -25,17 +25,6 @@ class BaseSegmentationModel(nn.Module):
         return self.input_size
 
 
-    def get_feature_module(self):
-        """
-        Return the spatial semantic module whose
-        output will be used for semantic guidance.
-
-        Must return an nn.Module producing a
-        [B, C, H, W] tensor.
-        """
-
-        raise NotImplementedError
-    
     def freeze(self):
 
         self.eval()

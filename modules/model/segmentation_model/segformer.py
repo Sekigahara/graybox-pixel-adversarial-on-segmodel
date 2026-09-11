@@ -1,12 +1,10 @@
-import torch
-import torch.nn.functional as F
+from modules.model.segmentation_model.base_segmentation_model import BaseSegmentationModel
 
 from transformers import (
     AutoImageProcessor,
     SegformerForSemanticSegmentation,
 )
 
-from modules.model.segmentation_model.base_segmentation_model import BaseSegmentationModel
 
 class SegFormerModel(BaseSegmentationModel):
     def __init__(
@@ -41,33 +39,59 @@ class SegFormerModel(BaseSegmentationModel):
 
         size = self.processor.size
 
-        if hasattr(size, "height") and hasattr(size, "width"):
-            self._input_size = (
-                int(size.height),
-                int(size.width),
-            )
+        if isinstance(size, dict):
 
-        elif isinstance(size, dict):
-            self._input_size = (
-                int(size["height"]),
-                int(size["width"]),
-            )
+            if (
+                "height" in size
+                and
+                "width" in size
+            ):
 
-        elif isinstance(size, (tuple, list)):
+                self._input_size = (
+                    size["height"],
+                    size["width"]
+                )
+
+            elif "shortest_edge" in size:
+
+                edge = size[
+                    "shortest_edge"
+                ]
+
+                self._input_size = (
+                    edge,
+                    edge
+                )
+
+            else:
+
+                raise ValueError(
+                    f"Unknown processor size "
+                    f"format: {size}"
+                )
+
+        elif isinstance(
+            size,
+            (tuple, list)
+        ):
+
             self._input_size = (
-                int(size[-2]),
-                int(size[-1]),
+                size[-2],
+                size[-1]
             )
 
         elif isinstance(size, int):
+
             self._input_size = (
                 size,
-                size,
+                size
             )
 
         else:
+
             raise ValueError(
-                f"Unsupported processor size: {size}"
+                f"Unsupported processor "
+                f"size: {size}"
             )
 
         # ==========================================
@@ -92,13 +116,7 @@ class SegFormerModel(BaseSegmentationModel):
             )
         )
 
-    def get_feature_module(self):
-        return (
-            self.model
-            .decode_head
-            .activation
-        )
-        
+
     @property
     def num_classes(self):
         return self._num_classes

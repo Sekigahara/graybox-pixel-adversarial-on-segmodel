@@ -2,333 +2,251 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from modules.model.adversarial_model.base_encoder import BaseEncoder
-
 class MaskDecoder(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        hidden_channels: int = 32,
     ):
         super().__init__()
 
-        groups = 8 if hidden_channels % 8 == 0 else 1
+        hidden = max(
+            in_channels // 4,
+            64
+        )
 
-        self.semantic_branch = nn.Sequential(
+        self.decoder = nn.Sequential(
+
             nn.Conv2d(
                 in_channels,
-                hidden_channels,
+                hidden,
+                kernel_size=3,
+                padding=1,
+            ),
+
+            nn.GELU(),
+
+            nn.Conv2d(
+                hidden,
+                hidden,
+                kernel_size=3,
+                padding=1,
+            ),
+
+            nn.GELU(),
+
+            nn.Conv2d(
+                hidden,
+                1,
                 kernel_size=1,
-                bias=False,
             ),
-            nn.GroupNorm(
-                groups,
-                hidden_channels,
-            ),
-            nn.GELU(),
-        )
-
-        self.local_branch = nn.Sequential(
-            nn.Conv2d(
-                3,
-                8,
-                kernel_size=3,
-                padding=1,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.GroupNorm(4, 8),
-            nn.GELU(),
-
-            nn.Conv2d(
-                8,
-                8,
-                kernel_size=3,
-                padding=1,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.GroupNorm(4, 8),
-            nn.GELU(),
-        )
-
-        self.fusion = nn.Sequential(
-            nn.Conv2d(
-                hidden_channels + 8,
-                hidden_channels,
-                kernel_size=3,
-                padding=1,
-                padding_mode="reflect",
-                bias=False,
-            ),
-            nn.GroupNorm(
-                groups,
-                hidden_channels,
-            ),
-            nn.GELU(),
-        )
-
-        self.retention_head = nn.Conv2d(
-            hidden_channels,
-            1,
-            kernel_size=1,
-        )
-
-        self.delta_head = nn.Conv2d(
-            hidden_channels,
-            3,
-            kernel_size=1,
-        )
-
-        nn.init.normal_(
-            self.retention_head.weight,
-            mean=0.0,
-            std=0.01,
-        )
-        nn.init.zeros_(
-            self.retention_head.bias
-        )
-
-        nn.init.normal_(
-            self.delta_head.weight,
-            mean=0.0,
-            std=0.01,
-        )
-        nn.init.zeros_(
-            self.delta_head.bias
         )
 
 
     def forward(
         self,
         features,
-        image,
+        output_size,
     ):
-        output_size = image.shape[-2:]
 
-        semantic_features = self.semantic_branch(
+        logits = self.decoder(
             features
         )
 
-        semantic_features = F.interpolate(
-            semantic_features,
+        logits = F.interpolate(
+            logits,
             size=output_size,
             mode="bilinear",
             align_corners=False,
         )
 
-        local_features = self.local_branch(
-            image
-        )
-
-        fused_features = torch.cat(
-            [
-                semantic_features,
-                local_features,
-            ],
-            dim=1,
-        )
-
-        fused_features = self.fusion(
-            fused_features
-        )
-
-        retention_logits = self.retention_head(
-            fused_features
-        )
-
-        raw_delta = self.delta_head(
-            fused_features
-        )
-
-        return retention_logits, raw_delta
-
+        return logits
+    
 class PatchMaskModel(nn.Module):
+
     def __init__(
         self,
         encoder: BaseEncoder,
-        patch_size=(512, 512),
-        epsilon: float = 0.01,
-        mask_temperature: float = 0.10,
-        decoder_hidden_channels: int = 32,
+        epsilon: float = 0.10,
     ):
+        """
+        epsilon:
+            fixed fraction of pixels that can be modified.
+
+        Example:
+
+            epsilon = 0.10
+
+        means exactly 10% of the spatial pixels
+        are selected by the mask.
+        """
+
         super().__init__()
 
+        if not 0.0 <= epsilon <= 1.0:
+            raise ValueError(
+                "epsilon must be between 0 and 1."
+            )
+
         self.encoder = encoder
-        self.patch_size = patch_size
+
+        # Fixed variable.
+        # This is NOT trainable.
         self.epsilon = epsilon
-        self.mask_temperature = mask_temperature
+
+        # ----------------------------------------------
+        # Mask prediction
+        # ----------------------------------------------
 
         self.mask_decoder = MaskDecoder(
-            in_channels=encoder.out_channels,
-            hidden_channels=decoder_hidden_channels,
+            in_channels=encoder.out_channels
         )
 
-    def _standardize_retention_logits(
-        self,
-        retention_logits,
-    ):
-        mean = retention_logits.mean(
-            dim=(2, 3),
-            keepdim=True,
+        # ----------------------------------------------
+        # Global trainable patch
+        #
+        # Patch stored at encoder's native resolution.
+        # ----------------------------------------------
+
+        H, W = encoder.input_size
+
+        self.patch_logits = nn.Parameter(
+            torch.zeros(
+                1,
+                3,
+                H,
+                W
+            )
         )
 
-        std = retention_logits.std(
-            dim=(2, 3),
-            keepdim=True,
-            unbiased=False,
+        nn.init.normal_(
+            self.patch_logits,
+            mean=0.0,
+            std=0.02,
         )
-
-        return (
-            retention_logits - mean
-        ) / (
-            std + 1e-6
-        )
-
 
     def _create_mask(
         self,
-        retention_logits,
-        keep_ratio,
-        use_hard_mask,
+        scores,
     ):
-        batch_size, _, height, width = retention_logits.shape
 
-        total_pixels = height * width
+        """
+        scores:
+            [B, 1, H, W]
+
+        Returns exact binary Top-K mask.
+        """
+
+        B, _, H, W = scores.shape
+
+        total_pixels = H * W
+
         k = round(
-            keep_ratio * total_pixels
+            self.epsilon
+            * total_pixels
         )
 
-        if k <= 0:
-            zero_mask = torch.zeros_like(
-                retention_logits
-            )
-            return zero_mask, zero_mask, zero_mask
+        if k == 0:
+            return torch.zeros_like(scores)
 
         if k >= total_pixels:
-            one_mask = torch.ones_like(
-                retention_logits
-            )
-            return one_mask, one_mask, one_mask
+            return torch.ones_like(scores)
 
-        flat_logits = retention_logits.flatten(
+        flat_scores = scores.flatten(
             start_dim=1
         )
 
-        top_values, top_indices = torch.topk(
-            flat_logits,
+        # Select exact K highest-scoring pixels
+        topk_indices = torch.topk(
+            flat_scores,
             k=k,
             dim=1,
-        )
+        ).indices
 
         hard_mask = torch.zeros_like(
-            flat_logits
+            flat_scores
         )
 
         hard_mask.scatter_(
             dim=1,
-            index=top_indices,
+            index=topk_indices,
             value=1.0,
         )
 
-        threshold = top_values[:, -1:].detach()
-
-        soft_mask = torch.sigmoid(
-            (
-                flat_logits - threshold
-            ) / self.mask_temperature
-        )
-
-        if use_hard_mask:
-            mask = (
-                hard_mask
-                + soft_mask
-                - soft_mask.detach()
-            )
-        else:
-            mask = soft_mask
-
-        mask = mask.view(
-            batch_size,
-            1,
-            height,
-            width,
-        )
-
         hard_mask = hard_mask.view(
-            batch_size,
+            B,
             1,
-            height,
-            width,
+            H,
+            W
         )
 
-        soft_mask = soft_mask.view(
-            batch_size,
-            1,
-            height,
-            width,
+        # Straight-through estimator
+        #
+        # Forward:
+        #     binary mask
+        #
+        # Backward:
+        #     gradients flow through scores
+
+        mask = (
+            hard_mask
+            + scores
+            - scores.detach()
         )
 
-        return mask, hard_mask, soft_mask
+        return mask
 
-    def forward(
-        self,
-        x,
-        keep_ratio=None,
-        use_hard_mask=True,
-        return_aux=False,
-    ):
-        if keep_ratio is None:
-            keep_ratio = self.epsilon
+
+    def forward(self, x):
+        B, _, H, W = x.shape
+
+        # ----------------------------------
+        # Encoder handles its own resize
+        # e.g. 512 -> 224
+        # ----------------------------------
 
         features = self.encoder(x)
 
-        retention_logits, raw_delta = self.mask_decoder(
+        # ----------------------------------
+        # Decode features back to the
+        # actual image / segmentation size
+        # ----------------------------------
+
+        mask_logits = self.mask_decoder(
             features,
-            x,
+            output_size=(H, W)
         )
 
-        retention_logits = self._standardize_retention_logits(
-            retention_logits
+        scores = torch.sigmoid(
+            mask_logits
         )
 
-        base_logits = torch.logit(
-            x.clamp(
-                min=1e-4,
-                max=1.0 - 1e-4,
-            )
+        # epsilon calculated at H × W
+        mask = self._create_mask(
+            scores
         )
+
+        # ----------------------------------
+        # Patch
+        # ----------------------------------
 
         patch = torch.sigmoid(
-            base_logits + raw_delta
+            self.patch_logits
         )
 
-        dense_delta = patch - x
+        if patch.shape[-2:] != (H, W):
 
-        mask, hard_mask, soft_mask = self._create_mask(
-            retention_logits,
-            keep_ratio,
-            use_hard_mask,
+            patch = F.interpolate(
+                patch,
+                size=(H, W),
+                mode="bilinear",
+                align_corners=False
+            )
+
+        patch = patch.expand(
+            B,
+            -1,
+            -1,
+            -1
         )
 
-        adversarial_image = (
-            x + mask * dense_delta
-        )
-
-        if not return_aux:
-            return patch, mask
-
-        return {
-            "patch": patch,
-            "mask": mask,
-            "hard_mask": hard_mask,
-            "soft_mask": soft_mask,
-            "retention_logits": retention_logits,
-            "retention_scores": torch.sigmoid(
-                retention_logits
-            ),
-            "raw_delta": raw_delta,
-            "dense_delta": dense_delta,
-            "adversarial_image": adversarial_image,
-            "keep_ratio": keep_ratio,
-        }
+        return patch, mask

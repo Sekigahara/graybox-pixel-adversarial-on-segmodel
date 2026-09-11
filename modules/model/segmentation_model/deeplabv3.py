@@ -1,6 +1,5 @@
 from modules.model.segmentation_model.base_segmentation_model import BaseSegmentationModel
 
-import torch
 from torchvision.models.segmentation import (
     deeplabv3_resnet50,
     DeepLabV3_ResNet50_Weights,
@@ -65,9 +64,7 @@ class DeepLabV3Model(BaseSegmentationModel):
     def num_classes(self):
         return 21
 
-    def get_feature_module(self):
-        return self.model.classifier[0]
-    
+
     def forward(self, x):
 
         """

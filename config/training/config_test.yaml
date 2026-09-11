@@ -1,35 +1,7 @@
 dataset:
-    dataset_root_path: "/home/islab-ai/dataset/mapilary_vista/vistas"
-    batch_size: 48
-    num_workers: 1
-    ignore_index: null
+    dataset_root_path: "/home/islab-ai/dataset/vistas"
 seg_model:
-    name: "mask2former_vistas"
+    name: "segformer_b0_ade"
 encoder_model:
     name: "resnet50"
     type: "conv"
-    n_trainable_layers: 1
-training:
-    epochs: 4
-    eps: 0.03
-    mask_temperature: 0.10
-    selection_grid: 64
-    weight_decay: 0.0001
-    loss_weight:
-        l_atk: 1.0
-        l_loc: 0.1
-        l_sem: 0.1
-        l_tv: 0.1
-        l_cam: 0.1
-        kappa: 0.0
-        rho: 0.5
-        camouflage_kernel: 5
-    scheduler:
-        lr: 0.001
-        warmup_epochs : 2
-        warmup_start_factor: 0.1
-        min_lr: 0.0001
-export:
-    log_mode: "append" 
-    save_dir: 'results/adversarial_seg'
-    checkpoint_interval: 5

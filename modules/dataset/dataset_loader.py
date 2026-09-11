@@ -9,7 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.functional as TF
 from torchvision.transforms import InterpolationMode
 
-class VistasDataset(Dataset):
+class VistasDatasetLoader(Dataset):
     def __init__(
         self,
         root: str,

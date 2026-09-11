@@ -21,15 +21,17 @@ class ConvEncoder(BaseEncoder):
         x = self.preprocess(x)
 
         features = self.backbone.forward_features(x)
-        
-        # Check dim
+
+        # Normally:
+        #
+        # [B, C, H, W]
         if features.ndim != 4:
             raise ValueError(
                 f"Expected CNN feature map, "
                 f"but received {features.shape}"
             )
 
-        # Check channel order, Some architectures may return NHWC
+        # Some architectures may return NHWC
         if (
             features.shape[1] != self.out_channels
             and features.shape[-1] == self.out_channels
